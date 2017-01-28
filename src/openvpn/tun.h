@@ -30,6 +30,10 @@
 #include <tap-windows.h>
 #endif
 
+#ifdef TARGET_DARWIN
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #include "buffer.h"
 #include "error.h"
 #include "mtu.h"
@@ -125,6 +129,10 @@ struct tuntap_options {
 
 #endif /* if defined(_WIN32) || defined(TARGET_ANDROID) */
 
+#ifdef TARGET_DARWIN
+typedef struct __IOEthernetController * IOEthernetControllerRef;
+#endif
+
 /*
  * Define a TUN/TAP dev.
  */
@@ -188,6 +196,11 @@ struct tuntap
 #ifdef HAVE_NET_IF_UTUN_H
     bool is_utun;
 #endif
+
+#ifdef TARGET_DARWIN
+    IOEthernetControllerRef userethernet;
+#endif
+
     /* used for printing status info only */
     unsigned int rwflags_debug;
 

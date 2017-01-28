@@ -55,6 +55,84 @@
 
 #include <string.h>
 
+#ifdef TARGET_DARWIN
+#include "crypto.h"
+#include <IOKit/IOKitLib.h>
+#include <IOKit/IOBSD.h>
+typedef void (*IOEthernetControllerCallback)(IOEthernetControllerRef controller, void * refcon);
+IOEthernetControllerRef IOEthernetControllerCreate(CFAllocatorRef, CFDictionaryRef);
+IOReturn IOEthernetControllerSetLinkStatus(IOEthernetControllerRef, Boolean);
+int IOEthernetControllerGetBSDSocket(IOEthernetControllerRef);
+io_object_t IOEthernetControllerGetIONetworkInterfaceObject(IOEthernetControllerRef);
+void IOEthernetControllerRegisterEnableCallback(IOEthernetControllerRef, IOEthernetControllerCallback, void *);
+void IOEthernetControllerScheduleWithRunLoop(IOEthernetControllerRef, CFRunLoopRef, CFStringRef);
+void IOEthernetControllerUnscheduleFromRunLoop(IOEthernetControllerRef, CFRunLoopRef, CFStringRef);
+extern CFTypeRef kIOEthernetHardwareAddress;
+
+static void
+userethernet_enable_callback(IOEthernetControllerRef controller, void *refcon)
+{
+    bool *ready = (bool *) refcon;
+    *ready = true;
+}
+
+static void
+open_userethernet(struct tuntap *tt)
+{
+    CFMutableDictionaryRef properties;
+    CFDataRef data;
+    CFStringRef rlmode;
+    kern_return_t kr;
+    io_object_t obj;
+    uint8_t hwaddr[6];
+    char name[128];
+    uint32_t namelen;
+    bool ready;
+    properties = CFDictionaryCreateMutable(NULL, 0,
+                                           &kCFTypeDictionaryKeyCallBacks,
+                                           &kCFTypeDictionaryValueCallBacks);
+    /* generate a random ethernet address */
+    prng_bytes(hwaddr, sizeof(hwaddr));
+    hwaddr[0] &= ~1; /* can't be multicast */
+    data = CFDataCreate(NULL, hwaddr, sizeof(hwaddr));
+    CFDictionarySetValue(properties, kIOEthernetHardwareAddress, data);
+    CFRelease(data);
+    tt->userethernet = IOEthernetControllerCreate(NULL, properties);
+    CFRelease(properties);
+    if (!tt->userethernet)
+        msg(M_FATAL, "IOEthernetControllerCreate returned NULL");
+    tt->fd = IOEthernetControllerGetBSDSocket(tt->userethernet);
+    ready = false;
+    IOEthernetControllerRegisterEnableCallback(tt->userethernet,
+                                               userethernet_enable_callback,
+                                               &ready);
+    rlmode = CFSTR("userethernet");
+    IOEthernetControllerScheduleWithRunLoop(tt->userethernet,
+                                            CFRunLoopGetCurrent(),
+                                            rlmode);
+    IOEthernetControllerSetLinkStatus(tt->userethernet, true);
+    while (!ready)
+        CFRunLoopRunInMode(rlmode, 100, true);
+    IOEthernetControllerUnscheduleFromRunLoop(tt->userethernet, CFRunLoopGetCurrent(), rlmode);
+    IOEthernetControllerRegisterEnableCallback(tt->userethernet, NULL, NULL);
+
+    obj = IOEthernetControllerGetIONetworkInterfaceObject(tt->userethernet);
+    namelen = (uint32_t) (sizeof(name) - 1);
+    kr = IORegistryEntryGetProperty(obj, kIOBSDNameKey, name, &namelen);
+    if (kr)
+        msg(M_FATAL, "couldn't get userethernet BSD name: %x", kr);
+    name[namelen] = 0;
+    tt->actual_name = string_alloc(name, NULL);
+}
+
+static void
+close_userethernet(struct tuntap *tt)
+{
+    IOEthernetControllerSetLinkStatus(tt->userethernet, false);
+    CFRelease(tt->userethernet);
+}
+#endif
+
 #ifdef _WIN32
 
 /* #define SIMULATE_DHCP_FAILED */       /* simulate bad DHCP negotiation */
@@ -3169,6 +3247,20 @@ open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tun
     }
     else
 #endif /* ifdef HAVE_NET_IF_UTUN_H */
+    if (dev_node && !strcmp(dev_node, "userethernet"))
+    {
+        if (tt->type != DEV_TYPE_TAP)
+        {
+            msg(M_FATAL, "Cannot use UserEthernet devices with --dev-type %s",
+                dev_type_string(dev, dev_type));
+
+        }
+        open_userethernet(tt);
+        return;
+    }
+#ifdef TARGET_DARWIN
+
+#endif /* ifdef TARGET_DARWIN */
     {
 
         /* Use plain dev-node tun to select /dev/tun style
@@ -3202,6 +3294,11 @@ close_tun(struct tuntap *tt)
             argv_msg(M_INFO, &argv);
             openvpn_execve_check(&argv, NULL, 0, "MacOS X 'remove inet6 route' failed (non-critical)");
         }
+
+#ifdef TARGET_DARWIN
+        if (tt->userethernet)
+            close_userethernet(tt);
+#endif
 
         close_tun_generic(tt);
         free(tt);

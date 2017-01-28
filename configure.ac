@@ -339,6 +339,7 @@ case "$host" in
 		dnl some Mac OS X tendering (we use vararg macros...)
 		CPPFLAGS="$CPPFLAGS -no-cpp-precomp"
 		ac_cv_type_struct_in_pktinfo=no
+		DARWIN=yes
 		;;
 	*-mingw*)
 		AC_DEFINE([TARGET_WIN32], [1], [Are we running WIN32?])
@@ -692,6 +693,9 @@ AC_CHECK_LIB(
 	[gethostbyname],
 	[SOCKETS_LIBS="${SOCKETS_LIBS} -lresolv"]
 )
+if test "${DARWIN}" = "yes"; then
+SOCKETS_LIBS="${SOCKETS_LIBS} -framework CoreFoundation -framework IOKit"
+fi
 AC_SUBST([SOCKETS_LIBS])
 
 old_LIBS="${LIBS}"
